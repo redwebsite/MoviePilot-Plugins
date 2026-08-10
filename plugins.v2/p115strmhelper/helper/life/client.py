@@ -29,10 +29,12 @@ from ...helper.mediainfo_download import MediaInfoDownloader
 from ...helper.mediasyncdel import MediaSyncDelHelper
 from ...helper.mediaserver import MediaServerRefresh, emby_mediainfo_queue
 
+from urllib.error import HTTPError
+
 from p115client import P115Client, check_response
-from p115client.exception import P115AuthenticationError
+from p115client.exception import P115AuthenticationError, P115OSError
 from p115client.tool.attr import get_path, normalize_attr
-from p115client.tool.fs_files import iter_fs_files
+from p115client.tool.fs_files import fs_files_iter
 from p115client.tool.iterdir import iter_files_with_path
 from p115client.tool.life import (
     life_show,
@@ -76,6 +78,7 @@ class MonitorLife:
 
     WAIT_TIME_OUT: int = 15
     SLEEP_TIME: int = 10
+    WEB_FALLBACK_DURATION: int = 24 * 60 * 60
 
     def __init__(
         self,
@@ -181,7 +184,9 @@ class MonitorLife:
                 client=self._client,
                 attr=cid,
                 root_id=None,
+                ensure_file=False,
                 refresh=True,
+                app="android",
                 **configer.get_ios_ua_app(app=False),
             )
             if not dir_path:
@@ -338,6 +343,7 @@ class MonitorLife:
                     cid=int(file_id),
                     with_ancestors=True,
                     cooldown=2,
+                    use_media_api=False,
                     **configer.get_ios_ua_app(),
                 ):
                     try:
@@ -389,7 +395,7 @@ class MonitorLife:
                             extension=file_path.suffix[1:].lower(),
                             size=item["size"],
                             pickcode=item["pickcode"],
-                            modify_time=item["ctime"],
+                            modify_time=item.get("ctime", None),
                         )
                         transferchain.do_transfer(fileitem=fileitem)
                         logger.info(f"【网盘整理】{file_path} 加入整理列队")
@@ -416,7 +422,7 @@ class MonitorLife:
                             extension=file_path.suffix[1:].lower(),
                             size=item["size"],
                             pickcode=item["pickcode"],
-                            modify_time=item["ctime"],
+                            modify_time=item.get("ctime", None),
                         )
                         transferchain.do_transfer(fileitem=fileitem)
                         logger.info(f"【网盘整理】{file_path} 加入整理列队")
@@ -546,6 +552,7 @@ class MonitorLife:
                     cid=int(file_id),
                     with_ancestors=True,
                     cooldown=2,
+                    use_media_api=False,
                     **configer.get_ios_ua_app(),
                 ),
                 7_000,
@@ -984,6 +991,61 @@ class MonitorLife:
             remove_local=configer.monitor_life_move_out_media_remove_local_strm,
         )
 
+    def _sync_rename_path_records(
+        self,
+        databasehelper: FileDbHelper,
+        file_id: int,
+        file_category: int,
+        old_pan_path: Optional[str],
+        new_pan_path: str,
+    ) -> None:
+        """
+        同步重命名事件的数据库和目录路径缓存
+
+        :param databasehelper (FileDbHelper): 文件数据库操作实例
+
+        :param file_id (int): 重命名项目 ID
+
+        :param file_category (int): 文件类型，0 表示文件夹
+
+        :param old_pan_path (str): 重命名前的网盘路径
+
+        :param new_pan_path (str): 重命名后的网盘路径
+        """
+        if file_category == 0:
+            cached_old_pan_path = idpathcacher.get_dir_by_id(file_id)
+            if old_pan_path and old_pan_path != new_pan_path:
+                databasehelper.update_path_prefix_batch(
+                    old_pan_path, new_pan_path, False
+                )
+                logger.info(
+                    "【监控生活事件】目录重命名路径同步完成: %s -> %s",
+                    old_pan_path,
+                    new_pan_path,
+                )
+            cache_prefixes: List[str] = []
+            for path in (cached_old_pan_path, old_pan_path):
+                if path and path != new_pan_path and path not in cache_prefixes:
+                    cache_prefixes.append(path)
+            for path in cache_prefixes:
+                idpathcacher.update_path_prefix(path, new_pan_path)
+            idpathcacher.add_cache(id=file_id, directory=new_pan_path)
+            return
+
+        if old_pan_path:
+            databasehelper.update_path_prefix_batch(old_pan_path, new_pan_path, True)
+            logger.info(
+                "【监控生活事件】文件重命名数据库路径同步完成: %s -> %s",
+                old_pan_path,
+                new_pan_path,
+            )
+        elif databasehelper.update_path_by_id(file_id, new_pan_path):
+            logger.info(
+                "【监控生活事件】文件重命名数据库按 id 更新路径: %s -> %s",
+                file_id,
+                new_pan_path,
+            )
+
     def rename(self, event: Dict[str, Any]):
         """
         重命名事件处理
@@ -1010,7 +1072,9 @@ class MonitorLife:
                     client=self._client,
                     attr=event["file_id"],
                     root_id=None,
+                    ensure_file=int(event["file_category"]) != 0,
                     refresh=True,
+                    app="android",
                     **configer.get_ios_ua_app(app=False),
                 )
             )
@@ -1020,6 +1084,14 @@ class MonitorLife:
             )
             return
 
+        self._sync_rename_path_records(
+            databasehelper=_databasehelper,
+            file_id=int(event["file_id"]),
+            file_category=int(event["file_category"]),
+            old_pan_path=old_pan_path,
+            new_pan_path=new_pan_path,
+        )
+
         # 未识别目录跳过处理
         if configer.pan_transfer_unrecognized_path and PathUtils.has_prefix(
             new_pan_path, configer.pan_transfer_unrecognized_path
@@ -1028,6 +1100,22 @@ class MonitorLife:
                 f"【监控生活事件】{new_pan_path} 为未识别目录下的路径，跳过重命名处理"
             )
             return
+
+        if configer.pan_transfer_enabled and configer.pan_transfer_paths:
+            if PathUtils.get_run_transfer_path(
+                paths=configer.pan_transfer_paths,
+                transfer_path=new_pan_path,
+            ):
+                logger.info(
+                    "【监控生活事件】重命名后路径命中待整理目录，执行网盘整理: %s",
+                    new_pan_path,
+                )
+                self.media_transfer(
+                    event=event,
+                    file_path=Path(new_pan_path),
+                    rmt_mediaext=self.rmt_mediaext,
+                )
+                return
 
         old_path = None
         if old_pan_path:
@@ -1074,16 +1162,6 @@ class MonitorLife:
                     f"【监控生活事件】{old_path} 本地文件夹不存在，跳过重命名处理: {event}",
                 )
                 return
-
-            if old_pan_path and new_pan_path:
-                _databasehelper.update_path_prefix_batch(
-                    old_pan_path, new_pan_path, False
-                )
-                logger.info(
-                    "【监控生活事件】目录重命名数据库路径批量同步完成: %s -> %s",
-                    old_pan_path,
-                    new_pan_path,
-                )
 
             if Path(new_path).exists():
                 logger.warning(
@@ -1147,25 +1225,6 @@ class MonitorLife:
                     f"【监控生活事件】旧文件路径与新文件路径不一致，跳过重命名处理: {event}",
                 )
                 return
-
-            if old_pan_path and new_pan_path:
-                _databasehelper.update_path_prefix_batch(
-                    old_pan_path, new_pan_path, True
-                )
-                logger.info(
-                    "【监控生活事件】文件重命名数据库路径同步完成: %s -> %s",
-                    old_pan_path,
-                    new_pan_path,
-                )
-            elif new_pan_path:
-                if _databasehelper.update_path_by_id(
-                    int(event["file_id"]), new_pan_path
-                ):
-                    logger.info(
-                        "【监控生活事件】文件重命名数据库按 id 更新路径: %s -> %s",
-                        event["file_id"],
-                        new_pan_path,
-                    )
 
             same_strm_path = old_strm_path.resolve() == new_strm_path.resolve()
 
@@ -1863,30 +1922,100 @@ class MonitorLife:
 
         return False
 
-    def once_pull(self, from_time, from_id):
+    @staticmethod
+    def _is_405_error(e: Exception) -> bool:
         """
-        单次拉取
+        判断异常是否由 HTTP 405 导致
 
-        :param from_time (int): 起始时间
+        :param e (Exception): 异常对象
+
+        :return bool: 是否为 405 错误
+        """
+        if isinstance(e, HTTPError):
+            return e.code == 405
+        if isinstance(e, P115OSError):
+            message = str(e)
+            return "405" in message or "Method Not Allowed" in message
+        return False
+
+    def _get_life_event_app(self) -> str:
+        """
+        获取当前应使用的生活事件拉取 app
+
+        若处于 web fallback 窗口期内则返回 web，否则返回 ios
+        """
+        state = configer.get_plugin_data("monitor_life_app_fallback") or {}
+        fallback_until = state.get("web_fallback_until")
+        if fallback_until and time() < fallback_until:
+            return "web"
+        if fallback_until:
+            state.pop("web_fallback_until", None)
+            configer.save_plugin_data("monitor_life_app_fallback", state)
+        return "ios"
+
+    def _reset_ios_405_count(self) -> None:
+        """
+        ios 拉取成功时清空 405 计数
+        """
+        state = configer.get_plugin_data("monitor_life_app_fallback") or {}
+        if state.get("ios_405_count"):
+            state["ios_405_count"] = 0
+            configer.save_plugin_data("monitor_life_app_fallback", state)
+
+    def _clear_web_fallback(self) -> None:
+        """
+        清理 web fallback 状态
+        """
+        state = configer.get_plugin_data("monitor_life_app_fallback") or {}
+        if state.pop("web_fallback_until", None):
+            configer.save_plugin_data("monitor_life_app_fallback", state)
+
+    def _record_ios_405(self) -> None:
+        """
+        记录一次 ios 405 且 web 成功，连续 3 次后 24h 内默认使用 web
+        """
+        state = configer.get_plugin_data("monitor_life_app_fallback") or {}
+        count = state.get("ios_405_count", 0) + 1
+        if count >= 3:
+            configer.save_plugin_data(
+                "monitor_life_app_fallback",
+                {
+                    "ios_405_count": 0,
+                    "web_fallback_until": int(time()) + self.WEB_FALLBACK_DURATION,
+                },
+            )
+            logger.warning(
+                "【监控生活事件】proapi 连续 3 次 405 且 webapi 正常，24h 内切换为 webapi 拉取"
+            )
+        else:
+            state["ios_405_count"] = count
+            configer.save_plugin_data("monitor_life_app_fallback", state)
+
+    def _pull_life_events(self, from_time: float, from_id: int, app: str) -> List:
+        """
+        单次拉取生活事件
+
+        :param from_time (float): 起始时间
         :param from_id (int): 起始 ID
+        :param app (str): app 类型
 
-        :return Tuple: (from_time, from_id)
+        :return List: 事件列表
         """
-        if self._wait_for_transfer_complete():
-            return from_time, from_id
-
         events_batch: List = []
         for attempt in range(3, -1, -1):
             try:
                 # 每次尝试先清空旧的值
                 events_batch: List = []
 
+                request_kwargs = configer.get_ios_ua_app(app=False)
+                request_kwargs["app"] = app
+
                 events_iterator = iter_life_behavior_once(
                     client=self._client,
                     from_time=from_time,
                     from_id=from_id,
                     cooldown=2,
-                    **configer.get_ios_ua_app(),
+                    **request_kwargs,
                 )
 
                 try:
@@ -1905,6 +2034,8 @@ class MonitorLife:
                 events_batch.extend(list(events_iterator))
                 break
             except Exception as e:
+                if self._is_405_error(e) and app == "ios":
+                    raise
                 if attempt <= 0:
                     logger.error(f"【监控生活事件】拉取数据失败：{e}")
                     raise
@@ -1912,7 +2043,59 @@ class MonitorLife:
                     f"【监控生活事件】拉取数据失败，剩余重试次数 {attempt} 次：{e}"
                 )
                 if self.stop_event and self.stop_event.wait(timeout=2):
-                    return from_time, from_id
+                    return []
+
+        return events_batch
+
+    def once_pull(self, from_time, from_id):
+        """
+        单次拉取
+
+        :param from_time (int): 起始时间
+        :param from_id (int): 起始 ID
+
+        :return Tuple: (from_time, from_id)
+        """
+        if self._wait_for_transfer_complete():
+            return from_time, from_id
+
+        app = self._get_life_event_app()
+        method = "webapi" if app == "web" else "proapi"
+        logger.debug("【监控生活事件】当前使用接口: %s", method)
+
+        try:
+            events_batch: List = self._pull_life_events(
+                from_time=from_time, from_id=from_id, app=app
+            )
+            if app == "ios":
+                self._reset_ios_405_count()
+        except (HTTPError, P115OSError) as e:
+            if app == "web":
+                if not self._is_405_error(e):
+                    raise
+                logger.warning(
+                    "【监控生活事件】webapi 拉取返回 405，尝试 proapi: %s",
+                    e,
+                )
+                self._clear_web_fallback()
+                events_batch: List = self._pull_life_events(
+                    from_time=from_time, from_id=from_id, app="ios"
+                )
+                self._reset_ios_405_count()
+            elif not self._is_405_error(e):
+                raise
+            else:
+                logger.warning(
+                    "【监控生活事件】proapi 拉取返回 405，尝试切换到 webapi 重试"
+                )
+                try:
+                    events_batch: List = self._pull_life_events(
+                        from_time=from_time, from_id=from_id, app="web"
+                    )
+                except (HTTPError, P115OSError):
+                    raise
+
+                self._record_ios_405()
 
         if not events_batch:
             if self.stop_event and self.stop_event.wait(timeout=self.WAIT_TIME_OUT):
@@ -2058,7 +2241,7 @@ class MonitorLife:
             logger.info(f"【监控生活事件】开始遍历目录: {path}")
             try:
                 for batch_count, data in enumerate(
-                    iter_fs_files(
+                    fs_files_iter(
                         self._client,
                         parent_id,
                         cooldown=2,
@@ -2071,20 +2254,20 @@ class MonitorLife:
                             f"【监控生活事件】第 {batch_count} 批数据为空，跳过"
                         )
                         continue
-                    items = data.get("data", [])
-                    if not items:
+                    raw_items = data.get("data", [])
+                    if not raw_items:
                         logger.debug(
                             f"【监控生活事件】第 {batch_count} 批数据中无文件项，跳过"
                         )
                         continue
                     logger.debug(
-                        f"【监控生活事件】处理第 {batch_count} 批数据，包含 {len(items)} 个项目"
+                        f"【监控生活事件】处理第 {batch_count} 批数据，包含 {len(raw_items)} 个项目"
                     )
-                    for item_index, item in enumerate(items, 1):
+                    for item_index, raw_item in enumerate(raw_items, 1):
                         item_type = "未知"
                         item_name = "未知"
                         try:
-                            item = normalize_attr(item)
+                            item = normalize_attr(raw_item)
                             item_name = item.get("name") or ""
                             item_id = item.get("id")
                             item_type = "文件夹" if item.get("is_dir") else "文件"

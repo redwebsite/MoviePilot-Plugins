@@ -3,7 +3,7 @@ from io import BytesIO
 from datetime import datetime
 from dataclasses import asdict
 from time import time, sleep
-from typing import Any, Dict, Iterator, Optional, cast
+from typing import Any, Dict, Optional
 from pathlib import Path
 from threading import Thread
 from urllib.parse import quote, unquote
@@ -12,8 +12,10 @@ from p115center import P115Center
 from qrcode import make as qr_make
 from orjson import dumps, loads
 from p115client import P115Client, check_response
+from p115client.const import APP_TO_SSOENT
 from p115client.exception import P115DataError
-from p115client.tool.fs_files import iter_fs_files
+from p115client.tool.attr import normalize_attr
+from p115client.tool.fs_files import fs_files_iter
 from fastapi import Body, Request, Response, Depends, status, Query
 from fastapi.responses import JSONResponse
 
@@ -85,6 +87,7 @@ from .schemas.strm_exec_history import DeleteStrmSyncHistoryPayload
 from .core.history import StrmExecHistoryManager
 from .schemas.fuse import FuseMountPayload, FuseStatusData
 from .utils.sentry import sentry_manager
+from .utils.url import UrlUtils
 
 from app.log import logger
 from app.core.cache import cached, TTLCache
@@ -301,17 +304,19 @@ class Api:
     @cached(
         region="p115strmhelper_api_get_user_storage_status", ttl=60 * 60, skip_none=True
     )
-    def get_user_storage_status(self) -> UserStorageStatusResponse:
+    def _get_user_storage_status_data(self) -> Optional[Dict[str, Any]]:
         """
-        获取 115 用户基本信息和空间使用情况
+        获取 115 用户基本信息和空间使用情况（返回可缓存字典）
+
+        :return Dict: 可缓存的用户存储状态字典
         """
         if not configer.get_config("cookies"):
-            return UserStorageStatusResponse(
-                success=False,
-                error_message="115 Cookies 未配置，无法获取信息。",
-                storage_info=None,
-                user_info=None,
-            )
+            return {
+                "success": False,
+                "error_message": "115 Cookies 未配置，无法获取信息。",
+                "storage_info": None,
+                "user_info": None,
+            }
 
         try:
             _temp_client = self._client
@@ -321,12 +326,12 @@ class Api:
                     logger.info("【用户存储状态】P115Client 初始化成功")
                 except Exception as e:
                     logger.error(f"【用户存储状态】P115Client 初始化失败: {e}")
-                    return UserStorageStatusResponse(
-                        success=False,
-                        error_message=f"115客户端初始化失败: {e}",
-                        storage_info=None,
-                        user_info=None,
-                    )
+                    return {
+                        "success": False,
+                        "error_message": f"115客户端初始化失败: {e}",
+                        "storage_info": None,
+                        "user_info": None,
+                    }
 
             # 获取用户信息
             user_info_resp = _temp_client.user_my_info()
@@ -353,12 +358,12 @@ class Api:
                     else "获取用户信息响应为空"
                 )
                 logger.error(f"【用户存储状态】获取用户信息失败: {error_msg}")
-                return UserStorageStatusResponse(
-                    success=False,
-                    error_message=f"获取115用户信息失败: {error_msg}",
-                    storage_info=None,
-                    user_info=None,
-                )
+                return {
+                    "success": False,
+                    "error_message": f"获取115用户信息失败: {error_msg}",
+                    "storage_info": None,
+                    "user_info": None,
+                }
 
             # 获取空间信息
             space_info_resp = _temp_client.fs_index_info(payload=0)
@@ -379,20 +384,18 @@ class Api:
                     else "获取空间信息响应为空"
                 )
                 logger.error(f"【用户存储状态】获取空间信息失败: {error_msg}")
-                return UserStorageStatusResponse(
-                    success=False,
-                    error_message=f"获取115空间信息失败: {error_msg}",
-                    user_info=UserInfo.model_validate(user_details_dict),
-                    storage_info=None,
-                )
+                return {
+                    "success": False,
+                    "error_message": f"获取115空间信息失败: {error_msg}",
+                    "user_info": user_details_dict,
+                    "storage_info": None,
+                }
 
-            return UserStorageStatusResponse(
-                success=True,
-                user_info=UserInfo.model_validate(user_details_dict),
-                storage_info=StorageInfo.model_validate(storage_details_dict)
-                if storage_details_dict
-                else None,
-            )
+            return {
+                "success": True,
+                "user_info": user_details_dict,
+                "storage_info": storage_details_dict if storage_details_dict else None,
+            }
 
         except Exception as e:
             logger.error(f"【用户存储状态】获取信息时发生意外错误: {e}", exc_info=True)
@@ -414,12 +417,28 @@ class Api:
             else:
                 specific_error_message = f"处理请求时发生错误: {str(e)}"
 
+            return {
+                "success": False,
+                "error_message": specific_error_message,
+                "storage_info": None,
+                "user_info": None,
+            }
+
+    def get_user_storage_status(self) -> UserStorageStatusResponse:
+        """
+        获取 115 用户基本信息和空间使用情况
+
+        :return UserStorageStatusResponse: 用户存储状态响应
+        """
+        data = self._get_user_storage_status_data()
+        if data is None:
             return UserStorageStatusResponse(
                 success=False,
-                error_message=specific_error_message,
+                error_message="缓存数据为空",
                 storage_info=None,
                 user_info=None,
             )
+        return UserStorageStatusResponse.model_validate(data)
 
     def browse_dir_api(
         self, params: BrowseDirParams = Depends()
@@ -476,25 +495,23 @@ class Api:
                     return ApiResponse(code=1, msg=f"获取目录ID失败: {path}")
 
                 items = []
-                fs_batches = cast(
-                    Iterator[Dict[str, Any]],
-                    iter_fs_files(
-                        self._client,
-                        cid,
-                        cooldown=2,
-                        **configer.get_ios_ua_app(app=False),
-                    ),
+                fs_batches = fs_files_iter(
+                    self._client,
+                    cid,
+                    cooldown=2,
+                    **configer.get_ios_ua_app(app=False),
                 )
                 for batch in fs_batches:
-                    for item in batch.get("data", []):
-                        if "fid" not in item:
-                            full_path = f"{path.as_posix().rstrip('/')}/{item.get('n')}"
+                    for raw_item in batch.get("data", []):
+                        item = normalize_attr(raw_item)
+                        if item["is_dir"]:
+                            full_path = f"{path.as_posix().rstrip('/')}/{item['name']}"
                             idpathcacher.add_cache(
-                                id=int(item.get("cid")), directory=full_path
+                                id=int(item["id"]), directory=full_path
                             )
                             items.append(
                                 DirectoryItem(
-                                    name=item.get("n"), path=full_path, is_dir=True
+                                    name=item["name"], path=full_path, is_dir=True
                                 )
                             )
 
@@ -519,33 +536,28 @@ class Api:
         获取登录二维码
         """
         try:
-            final_client_type = params.client_type
-            allowed_types = [
-                "web",
-                "android",
-                "115android",
-                "ios",
-                "115ios",
-                "alipaymini",
-                "wechatmini",
-                "115ipad",
-                "tv",
-                "qandroid",
-            ]
-            if final_client_type not in allowed_types:
+            final_client_type = (params.client_type or "").strip()
+            if final_client_type not in APP_TO_SSOENT:
                 final_client_type = "alipaymini"
             logger.info(f"【扫码登入】二维码API - 使用客户端类型: {final_client_type}")
 
             resp = P115Client.login_qrcode_token()
             check_response(resp)
-            resp_info = resp.get("data", {})
+            resp_info = resp.get("data") or {}
             _uid = str(resp_info.get("uid", ""))
             _time = str(resp_info.get("time", ""))
             _sign = str(resp_info.get("sign", ""))
-            resp = P115Client.login_qrcode(_uid)
-            if not isinstance(resp, (bytes, bytearray)):
-                return ApiResponse(code=-1, msg="获取二维码失败: 返回内容类型异常")
-            qrcode_base64 = b64encode(resp).decode("utf-8")
+            if not _uid or not _time or not _sign:
+                return ApiResponse(code=-1, msg="获取二维码失败: 返回登录参数不完整")
+
+            qrcode_content = str(resp_info.get("qrcode") or "")
+            if not qrcode_content:
+                qrcode_content = f"https://115.com/scan/dg-{_uid}"
+
+            img = qr_make(qrcode_content)
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            qrcode_base64 = b64encode(buffered.getvalue()).decode("utf-8")
 
             return ApiResponse(
                 data=QRCodeData(
@@ -571,6 +583,9 @@ class Api:
         try:
             if not uid:
                 return ApiResponse(code=-1, msg="无效的二维码ID，参数uid不能为空")
+            final_client_type = (client_type or "").strip()
+            if final_client_type not in APP_TO_SSOENT:
+                final_client_type = "alipaymini"
             payload = {
                 "uid": uid,
                 "time": _time,
@@ -580,7 +595,7 @@ class Api:
             if not isinstance(resp, dict):
                 return ApiResponse(code=-1, msg="检查二维码状态异常: 返回数据类型异常")
             check_response(resp)
-            status_code = resp.get("data").get("status")
+            status_code = (resp.get("data") or {}).get("status")
         except Exception as e:
             error_msg = f"检查二维码状态异常: {str(e)}"
             logger.error(f"【扫码登入】检查二维码状态异常: {e}", exc_info=True)
@@ -601,7 +616,7 @@ class Api:
 
         if status_code == 2:
             try:
-                resp = P115Client.login_qrcode_scan_result(uid, app=client_type)
+                resp = P115Client.login_qrcode_scan_result(uid, app=final_client_type)
                 if not isinstance(resp, dict):
                     return ApiResponse(
                         code=-1, msg="获取登录结果失败: 返回数据类型异常"
@@ -632,7 +647,7 @@ class Api:
                             default_timeout=configer.get_default_timeout(),
                             slow_timeout=configer.get_slow_timeout(),
                         )
-                        self.get_user_storage_status.cache_clear()
+                        self._get_user_storage_status_data.cache_clear()
                         return ApiResponse(
                             data=CheckQRCodeData(
                                 status="success", msg="登录成功", cookie=_cookies
@@ -828,10 +843,11 @@ class Api:
             encoded_filename = quote(file_name, safe="")
             content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
 
+        redirect_url = UrlUtils.encode_url_fully(str(url))
         return Response(
             status_code=status.HTTP_302_FOUND,
             headers={
-                "Location": url,
+                "Location": redirect_url,
                 "Content-Disposition": content_disposition,
             },
             media_type="application/json; charset=utf-8",

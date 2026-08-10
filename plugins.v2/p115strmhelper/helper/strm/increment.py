@@ -1,19 +1,23 @@
 from sys import platform as sys_platform
 from collections import deque
 from functools import partial
-from itertools import batched
+from itertools import batched, cycle
 from os import close, O_CREAT, O_RDWR, open as os_open
 from pathlib import Path
+from posixpath import join as posix_join
 from threading import Thread
 from time import perf_counter, sleep
 from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Tuple
 
 from p115client import P115Client
+from p115client.tool.attr import normalize_attr
 from p115client.tool.export_dir import (
+    export_dir_start,
+    export_dir_status,
     export_dir_parse_iter,
-    parse_export_dir_as_path_iter,
+    export_dir_parse_iter_path,
 )
-from p115client.tool.fs_files import iter_fs_files
+from p115client.tool.fs_files import fs_files_iter
 from p115client.tool.iterdir import iterdir
 from sqlalchemy.orm.exc import MultipleResultsFound
 
@@ -129,6 +133,7 @@ class IncrementSyncStrmHelper:
         self.strm_exec_history_kind: Optional[str] = None
         self.strm_fail_dict: Dict[str, str] = {}
         self.mediainfo_fail_dict: List = []
+        self._iterdir_app_cycle = cycle([False, True])
 
         self.pan_transfer_enabled = configer.pan_transfer_enabled
         self.pan_transfer_paths = configer.pan_transfer_paths
@@ -191,7 +196,7 @@ class IncrementSyncStrmHelper:
         interval_sec: Optional[float] = None,
     ) -> Callable[[], None]:
         """
-        供 export_dir_parse_iter(show_clock=...) 使用：在等待云端导出目录树时用 info 打日志并按时间节流
+        供 __wait_export_dir 使用：在等待云端导出目录树时用 info 打日志并按时间节流
 
         :param interval_sec (float): 节流间隔秒数，默认使用类属性 _EXPORT_DIR_WAIT_LOG_INTERVAL_SEC
         """
@@ -211,6 +216,30 @@ class IncrementSyncStrmHelper:
             logger.info("【增量STRM生成】等待 115 云端导出目录树任务...")
 
         return _tick
+
+    def __wait_export_dir(self, export_id: int | str) -> None:
+        """
+        轮询等待 115 云端导出目录树任务完成
+
+        :param export_id: 导出目录树任务 id
+        :raises TimeoutError: 超过配置的超时时间仍未完成
+        """
+        timeout = configer.increment_sync_itertree_timeout_seconds
+        expired_t = perf_counter() + timeout if timeout and timeout > 0 else None
+        wait_logger = self._make_throttled_export_dir_wait_logger()
+        while True:
+            status = export_dir_status(
+                self.client,
+                export_id,
+                **configer.get_ios_ua_app(app=False),
+            )
+            self.api_count += 1
+            if status.get("file_id"):
+                return
+            if expired_t is not None and perf_counter() >= expired_t:
+                raise TimeoutError(export_id)
+            wait_logger()
+            sleep(1)
 
     def __itertree(
         self, pan_path: str, local_path: str
@@ -252,13 +281,20 @@ class IncrementSyncStrmHelper:
                 raise PanPathNotFound(f"网盘路径不存在: {pan_path}")
             self.api_count += 4
 
+            export_id = export_dir_start(
+                self.client,
+                file_ids=cid,
+                **configer.get_ios_ua_app(app=False),
+            )
+            self.api_count += 1
+
+            self.__wait_export_dir(export_id)
+
             items_iterator = export_dir_parse_iter(
-                client=self.client,
-                export_file_ids=cid,
+                self.client,
+                export_id,
+                parse_iter=partial(export_dir_parse_iter_path, escape=custom_escape),
                 delete=True,
-                show_clock=self._make_throttled_export_dir_wait_logger(),
-                timeout=configer.increment_sync_itertree_timeout_seconds,
-                parse_iter=partial(parse_export_dir_as_path_iter, escape=custom_escape),
                 **configer.get_ios_ua_app(app=False),
             )
             try:
@@ -307,22 +343,26 @@ class IncrementSyncStrmHelper:
             _flock_un(lock_fd)
             close(lock_fd)
 
-    def __iterdir(self, cid: int, path: str) -> Iterator:
+    def __iterdir(self, cid: int, path: str) -> Iterator[Dict[str, Any]]:
         """
         迭代网盘目录
 
         :param cid (int): 网盘目录 ID
         :param path (str): 网盘路径
 
-        :return Iterator: 网盘文件(夹)信息迭代器
+        :return Iterator: 规范化后的网盘文件或文件夹信息迭代器
         """
         logger.debug(f"【增量STRM生成】迭代网盘目录: {cid} {path}")
-        for batch in iter_fs_files(
-            self.client, cid, cooldown=2, **configer.get_ios_ua_app(app=False)
+        for batch in fs_files_iter(
+            self.client,
+            cid,
+            cooldown=2,
+            **configer.get_ios_ua_app(app=next(self._iterdir_app_cycle)),
         ):
             self.api_count += 1
-            for item in batch.get("data", []):
-                item["path"] = path + "/" + item.get("n")
+            for raw_item in batch.get("data", []):
+                item = normalize_attr(raw_item)
+                item["path"] = posix_join(path, item["name"])
                 yield item
 
     def __get_cid_by_path(self, path: str) -> Optional[int]:
@@ -404,7 +444,7 @@ class IncrementSyncStrmHelper:
             ):
                 processed: List = []
                 for item in batch:
-                    processed.extend(self.databasehelper.process_fs_files_item(item))
+                    processed.extend(self.databasehelper.process_item(item))
                 self.databasehelper.upsert_batch(processed)
             last_path = temp_path
             sleep(2)
@@ -768,7 +808,11 @@ class IncrementSyncStrmHelper:
         if cid == -1:
             raise PanPathNotFound(f"网盘路径不存在: {path}")
         for item in iterdir(
-            client=self.client, cid=cid, cooldown=2, **configer.get_ios_ua_app()
+            client=self.client,
+            cid=cid,
+            cooldown=2,
+            max_workers=0,
+            **configer.get_ios_ua_app(),
         ):
             if not item["is_dir"]:
                 raise OSError("二级目录不能存在文件")

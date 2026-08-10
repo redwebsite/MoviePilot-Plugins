@@ -52,22 +52,22 @@ jobs:
 
     steps:
       - name: Checkout plugin code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout MoviePilot
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: jxxghp/MoviePilot
           path: MoviePilot
 
       - name: Checkout MoviePilot resources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: jxxghp/MoviePilot-Resources
           path: MoviePilot-Resources
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -95,16 +95,16 @@ jobs:
       - name: Start Redis (Windows)
         if: runner.os == 'Windows'
         run: |
-          choco install redis-64 --version 3.0.503 -y
-          $env:Path += ";C:\Program Files\Redis"
-          redis-server --service-install
-          redis-server --service-start
-          redis-cli ping
+          choco install memurai-developer -y --no-progress
+          $svc = Get-Service Memurai -ErrorAction SilentlyContinue
+          if ($svc -and $svc.Status -ne 'Running') {
+            Start-Service Memurai
+          }
+          Get-Service Memurai
         shell: powershell
 
       - name: Run tests
-        working-directory: plugins.v2/p115strmhelper
         env:
           PYTHONPATH: ${{ github.workspace }}/MoviePilot${{ matrix.os == 'windows-latest' && ';' || ':' }}${{ github.workspace }}/plugins.v2/p115strmhelper
         run: |
-          python -m unittest discover -s tests -v
+          python -m unittest discover -s plugins.v2/p115strmhelper/tests -v

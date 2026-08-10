@@ -52,6 +52,19 @@ class TransferHandler:
         logger.info(f"【整理接管】初始化整理执行器，存储: {storage_name}")
 
     @staticmethod
+    def _normalize_ext(ext: Optional[str]) -> Optional[str]:
+        """
+        归一化扩展名（兼容配置中带点/不带点、大小写差异）
+
+        :param ext (str): 原始扩展名
+
+        :return str: 归一化后的带点小写扩展名，如 ".ass"
+        """
+        if not ext:
+            return None
+        return f".{str(ext).strip().lower().lstrip('.')}"
+
+    @staticmethod
     def _is_subtitle_file(fileitem: FileItem) -> bool:
         """
         判断是否为字幕文件
@@ -59,9 +72,14 @@ class TransferHandler:
         :param fileitem (FileItem): 文件项
         :return bool: 是否为字幕文件
         """
-        if not fileitem.extension:
+        ext = TransferHandler._normalize_ext(fileitem.extension)
+        if not ext and fileitem.path:
+            ext = TransferHandler._normalize_ext(Path(fileitem.path).suffix)
+        if not ext:
             return False
-        return f".{fileitem.extension.lower()}" in settings.RMT_SUBEXT
+        return ext in {
+            TransferHandler._normalize_ext(ext_item) for ext_item in settings.RMT_SUBEXT
+        }
 
     @staticmethod
     def _is_audio_file(fileitem: FileItem) -> bool:
@@ -71,9 +89,15 @@ class TransferHandler:
         :param fileitem (FileItem): 文件项
         :return bool: 是否为音频文件
         """
-        if not fileitem.extension:
+        ext = TransferHandler._normalize_ext(fileitem.extension)
+        if not ext and fileitem.path:
+            ext = TransferHandler._normalize_ext(Path(fileitem.path).suffix)
+        if not ext:
             return False
-        return f".{fileitem.extension.lower()}" in settings.RMT_AUDIOEXT
+        return ext in {
+            TransferHandler._normalize_ext(ext_item)
+            for ext_item in settings.RMT_AUDIOEXT
+        }
 
     @staticmethod
     def _is_media_file(fileitem: FileItem) -> bool:
@@ -85,9 +109,15 @@ class TransferHandler:
         """
         if fileitem.type == "dir":
             return StorageChain().is_bluray_folder(fileitem)
-        if not fileitem.extension:
+        ext = TransferHandler._normalize_ext(fileitem.extension)
+        if not ext and fileitem.path:
+            ext = TransferHandler._normalize_ext(Path(fileitem.path).suffix)
+        if not ext:
             return False
-        return f".{fileitem.extension.lower()}" in settings.RMT_MEDIAEXT
+        return ext in {
+            TransferHandler._normalize_ext(ext_item)
+            for ext_item in settings.RMT_MEDIAEXT
+        }
 
     @staticmethod
     def _sort_tasks_for_batch(tasks: List[TransferTask]) -> List[TransferTask]:
@@ -945,18 +975,18 @@ class TransferHandler:
                     logger.debug(f"【整理接管】目录 {target_dir} 中没有文件")
                     continue
 
-                # 收集需要删除的文件（按季集分组）
+                # 收集需要删除的文件（按季集 Part 分组）
                 files_to_delete_by_se: Dict[
-                    Tuple[Optional[str], Optional[str]], List[FileItem]
+                    Tuple[Optional[str], Optional[str], Optional[str]], List[FileItem]
                 ] = defaultdict(list)
 
-                # 收集所有目标文件的季集信息
-                target_seasons_episodes: Set[Tuple[Optional[str], Optional[str]]] = (
-                    set()
-                )
+                # 收集所有目标文件的季集 Part 信息
+                target_seasons_episodes: Set[
+                    Tuple[Optional[str], Optional[str], Optional[str]]
+                ] = set()
                 for target_path, _ in tasks:
                     meta = MetaInfoPath(target_path)
-                    target_seasons_episodes.add((meta.season, meta.episode))
+                    target_seasons_episodes.add((meta.season, meta.episode, meta.part))
 
                 if not target_seasons_episodes:
                     logger.debug(
@@ -979,14 +1009,15 @@ class TransferHandler:
                     if file_ext not in settings.RMT_MEDIAEXT:
                         continue
 
-                    # 识别文件中的季集信息
+                    # 识别文件中的季集 Part 信息
                     file_meta = MetaInfoPath(Path(file.path))
-                    file_se: Tuple[Optional[str], Optional[str]] = (
+                    file_se: Tuple[Optional[str], Optional[str], Optional[str]] = (
                         file_meta.season,
                         file_meta.episode,
+                        file_meta.part,
                     )
 
-                    # 检查是否与任何目标文件的季集匹配
+                    # 检查是否与任何目标文件的季集 Part 匹配
                     if file_se in target_seasons_episodes:
                         # 检查是否为目标文件本身（通过路径匹配）
                         is_target_file = False
@@ -1190,20 +1221,21 @@ class TransferHandler:
                 elif self._is_audio_file(fi):
                     complete_event = EventType.AudioTransferComplete
                 else:
-                    complete_event = EventType.TransferComplete
+                    complete_event = None
 
-                eventmanager.send_event(
-                    complete_event,
-                    {
-                        "fileitem": task.fileitem,
-                        "meta": task.meta,
-                        "mediainfo": task.mediainfo,
-                        "transferinfo": transferinfo,
-                        "downloader": task.downloader,
-                        "download_hash": task.download_hash,
-                        "transfer_history_id": history.id if history else None,
-                    },
-                )
+                if complete_event:
+                    eventmanager.send_event(
+                        complete_event,
+                        {
+                            "fileitem": task.fileitem,
+                            "meta": task.meta,
+                            "mediainfo": task.mediainfo,
+                            "transferinfo": transferinfo,
+                            "downloader": task.downloader,
+                            "download_hash": task.download_hash,
+                            "transfer_history_id": history.id if history else None,
+                        },
+                    )
 
                 try:
                     chain = TransferChain()
@@ -1888,20 +1920,21 @@ class TransferHandler:
             elif self._is_audio_file(fi):
                 fail_event = EventType.AudioTransferFailed
             else:
-                fail_event = EventType.TransferFailed
+                fail_event = None
 
-            eventmanager.send_event(
-                fail_event,
-                {
-                    "fileitem": task.fileitem,
-                    "meta": task.meta,
-                    "mediainfo": task.mediainfo,
-                    "transferinfo": transferinfo,
-                    "downloader": task.downloader,
-                    "download_hash": task.download_hash,
-                    "transfer_history_id": history.id if history else None,
-                },
-            )
+            if fail_event:
+                eventmanager.send_event(
+                    fail_event,
+                    {
+                        "fileitem": task.fileitem,
+                        "meta": task.meta,
+                        "mediainfo": task.mediainfo,
+                        "transferinfo": transferinfo,
+                        "downloader": task.downloader,
+                        "download_hash": task.download_hash,
+                        "transfer_history_id": history.id if history else None,
+                    },
+                )
 
             # 发送失败通知
             try:
@@ -1916,6 +1949,7 @@ class TransferHandler:
                         else None,
                         username=task.username,
                         link=settings.MP_DOMAIN("#/history"),
+                        save_history=False,
                     )
                 )
             except Exception as e:
