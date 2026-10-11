@@ -27,7 +27,7 @@
   },
   "P115StrgmSub": {
     "name": "115网盘订阅追更魔改版",
-    "release": true,
+    "release": false,
     "description": "jyh 定制的 115 网盘订阅追更魔改版，基于 mrtian2016 深度改造。内置事件驱动洗版通知、屏蔽时段调度、评分拦截系统、MP 规则组管理。",
     "labels": "订阅,115网盘,洗版,PT洗版,魔改",
     "version": "1.7.5",
@@ -59,7 +59,7 @@
   },
   "Doc911Subscribe": {
     "name": "911文档订阅添加",
-    "release": true,
+    "release": false,
     "description": "每天21:01扫描金山文档，自动添加「本月更新【国产剧】」「本月更新【国外剧】」「本月更新【综艺】」在播新剧到MP订阅。可配置文档链接，TMDB识别失败时发送通知提醒。",
     "labels": "订阅,文档,KDocs,金山文档,自动订阅,通知",
     "version": "1.0.01",
