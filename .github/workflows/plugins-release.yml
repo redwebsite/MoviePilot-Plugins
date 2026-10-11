@@ -29,12 +29,13 @@ on:
         type: boolean
         default: false
 
-  # 2. 自动触发器：当 main 分支的指定文件发生 push 时
+  # 2. 自动触发器：当 main 分支的 package.v2.json 发生 push 时
+  # 注意：package.json 是供 MoviePilot 兼容使用的镜像文件，变更不触发 Release
   push:
     branches:
       - main
     paths:
-      - 'package*.json'
+      - 'package.v2.json'
 
 jobs:
   # 检测需要发布的插件
