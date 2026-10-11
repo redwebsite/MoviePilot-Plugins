@@ -26,6 +26,39 @@ from .search import SearchHandler
 from .subscribe import SubscribeHandler
 
 
+def _resolve_no_exists_season_info(no_exists, mediainfo, subscribe, season):
+    """
+    v3 no_exists 键为 source 前缀格式（如 "tmdb:95350"），按多种键格式尝试匹配。
+    返回对应季的 not_exist_info，匹配不到返回 None。
+    """
+    if not no_exists:
+        return None
+    tmdb_id = getattr(mediainfo, "tmdb_id", None)
+    douban_id = getattr(mediainfo, "douban_id", None)
+    ms = getattr(subscribe, "media_source", "") or ""
+    mid = getattr(subscribe, "media_id", "") or ""
+    candidates = []
+    if tmdb_id:
+        candidates += [tmdb_id, str(tmdb_id), f"tmdb:{tmdb_id}"]
+    if douban_id:
+        candidates += [douban_id, str(douban_id), f"douban:{douban_id}"]
+    if ms and mid:
+        candidates.append(f"{ms}:{mid}")
+    for key in candidates:
+        season_info = no_exists.get(key)
+        if not season_info:
+            continue
+        info = season_info.get(season)
+        if info:
+            return info
+    if len(no_exists) == 1:
+        only = next(iter(no_exists.values()))
+        info = only.get(season)
+        if info:
+            return info
+    return None
+
+
 class SyncHandler:
     """同步处理器"""
 
@@ -176,8 +209,8 @@ class SyncHandler:
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta,
                 mtype=MediaType.MOVIE,
-                tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)),
-                doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)),
+                media_source=getattr(subscribe, 'media_source', None),
+                media_id=getattr(subscribe, 'media_id', None),
                 cache=True
             )
             if not mediainfo:
@@ -417,8 +450,8 @@ class SyncHandler:
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta,
                 mtype=MediaType.TV,
-                tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)),
-                doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)),
+                media_source=getattr(subscribe, 'media_source', None),
+                media_id=getattr(subscribe, 'media_id', None),
                 cache=True
             )
 
@@ -461,19 +494,22 @@ class SyncHandler:
             # 获取缺失的集数列表
             season = meta.begin_season or 1
             missing_episodes = []
-            mediakey = mediainfo.tmdb_id or mediainfo.douban_id
-
-            if no_exists and mediakey:
-                season_info = no_exists.get(mediakey, {})
-                not_exist_info = season_info.get(season)
-                if not_exist_info:
-                    missing_episodes = not_exist_info.episodes or []
-                    if not missing_episodes and not_exist_info.total_episode:
-                        start_ep = not_exist_info.start_episode or 1
-                        missing_episodes = list(range(start_ep, not_exist_info.total_episode + 1))
+            not_exist_info = _resolve_no_exists_season_info(
+                no_exists, mediainfo, subscribe, season
+            )
+            if not_exist_info:
+                missing_episodes = not_exist_info.episodes or []
+                if not missing_episodes and not_exist_info.total_episode:
+                    start_ep = not_exist_info.start_episode or 1
+                    missing_episodes = list(
+                        range(start_ep, not_exist_info.total_episode + 1)
+                    )
 
             if not missing_episodes:
-                logger.info(f"{mediainfo.title_year} S{season} 没有缺失剧集信息")
+                logger.warning(
+                    f"{mediainfo.title_year} S{season} no_exists 无法匹配 "
+                    f"(keys={list((no_exists or {}).keys())})，跳过以避免全量误转存"
+                )
                 return transferred_count
 
             # 过滤掉小于开始集数的剧集
@@ -1028,7 +1064,7 @@ class SyncHandler:
 
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta, mtype=MediaType.TV,
-                tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)), doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)), cache=True
+                media_source=getattr(subscribe, 'media_source', None), media_id=getattr(subscribe, 'media_id', None), cache=True
             )
             if not mediainfo:
                 logger.warn(f"【洗版转存】无法识别媒体信息 {subscribe.name}")
@@ -2210,8 +2246,8 @@ class SyncHandler:
 
             mediainfo = self._chain.recognize_media(
                 meta=meta, mtype=MediaType.TV,
-                tmdbid=getattr(subscribe, 'tmdbid', None),
-                doubanid=getattr(subscribe, 'doubanid', None),
+                media_source=getattr(subscribe, 'media_source', None),
+                media_id=getattr(subscribe, 'media_id', None),
                 cache=True
             )
             if not mediainfo:
