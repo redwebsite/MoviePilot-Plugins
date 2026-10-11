@@ -9,7 +9,7 @@
     "author": "DDSRem",
     "level": 1,
     "history": {
-      "v1.3": "回退 MediaWarp 二进制版本至 v0.2.4（v0.2.5 无 linux_arm64 包）；修复下载 URL 模板（v 前缀）；修复 P115StrgmSub subscribe.tmdbid 兼容性",
+      "v1.3": "同步上游 AkimioJR/MediaWarp v0.2.5；修复下载 URL 模板（v 前缀）",
       "v1.2": "独立仓库：仅保留 MediaWarp 插件，与原作者 AkimioJR/MediaWarp v0.2.4 保持同步",
       "v1.1.1": "同步更新配置字段（全变为小写 schema）以兼容 MediaWarp v0.2.4 新版配置规范，解决端口及 Emby 地址配置不生效的问题",
       "v1.1.0": "修复端口参数在 YAML 中被识别为字符串导致 unmarshal error 无法启动的问题",

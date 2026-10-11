@@ -80,7 +80,7 @@ class MediaWarp(_PluginBase):
         # 配置文件名
         self.__config_filename = "config.yaml"
         # 二级制文件版本
-        self.__mediawarp_version = "0.2.4"
+        self.__mediawarp_version = "0.2.5"
         self.__mediawarp_version_path = (
             settings.PLUGIN_DATA_PATH / class_name / "version.txt"
         )
