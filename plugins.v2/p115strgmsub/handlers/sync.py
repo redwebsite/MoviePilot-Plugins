@@ -177,7 +177,7 @@ class SyncHandler:
                 meta=meta,
                 mtype=MediaType.MOVIE,
                 tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)),
-                doubanid=subscribe.doubanid,
+                doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)),
                 cache=True
             )
             if not mediainfo:
@@ -418,7 +418,7 @@ class SyncHandler:
                 meta=meta,
                 mtype=MediaType.TV,
                 tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)),
-                doubanid=subscribe.doubanid,
+                doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)),
                 cache=True
             )
 
@@ -1028,7 +1028,7 @@ class SyncHandler:
 
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta, mtype=MediaType.TV,
-                tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)), doubanid=subscribe.doubanid, cache=True
+                tmdbid=(getattr(subscribe, 'tmdbid', None) or getattr(subscribe, 'tmdb_id', None)), doubanid=(getattr(subscribe, 'doubanid', None) or getattr(subscribe, 'douban_id', None)), cache=True
             )
             if not mediainfo:
                 logger.warn(f"【洗版转存】无法识别媒体信息 {subscribe.name}")
@@ -1928,7 +1928,7 @@ class SyncHandler:
             with SessionFactory() as db:
                 oper = SubscribeOper(db=db)
                 rows = db.execute(text(
-                    "SELECT id, episode_priority, name, season, save_path, tmdbid, year "
+                    "SELECT id, episode_priority, name, season, save_path, year "
                     "FROM subscribe WHERE episode_priority IS NOT NULL AND episode_priority != '{}'"
                 )).fetchall()
         except Exception as e:
@@ -1951,7 +1951,8 @@ class SyncHandler:
 
         for row in rows:
             try:
-                sid, raw_ep_pri, name, season, save_path, tmdbid, year = row
+                sid, raw_ep_pri, name, season, save_path, year = row
+                tmdbid = None  # tmdbid 列在部分 MP 版本中不存在，已从 SELECT 移除
                 if not raw_ep_pri:
                     continue
                 if isinstance(raw_ep_pri, str):
