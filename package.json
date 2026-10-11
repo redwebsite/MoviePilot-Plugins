@@ -9,7 +9,7 @@
     "author": "DDSRem",
     "level": 1,
     "history": {
-      "v1.3": "同步上游 AkimioJR/MediaWarp v0.2.5",
+      "v1.3": "回退 MediaWarp 二进制版本至 v0.2.4（v0.2.5 无 linux_arm64 包）；修复下载 URL 模板（v 前缀）；修复 P115StrgmSub subscribe.tmdbid 兼容性",
       "v1.2": "独立仓库：仅保留 MediaWarp 插件，与原作者 AkimioJR/MediaWarp v0.2.4 保持同步",
       "v1.1.1": "同步更新配置字段（全变为小写 schema）以兼容 MediaWarp v0.2.4 新版配置规范，解决端口及 Emby 地址配置不生效的问题",
       "v1.1.0": "修复端口参数在 YAML 中被识别为字符串导致 unmarshal error 无法启动的问题",
@@ -30,11 +30,12 @@
     "release": true,
     "description": "jyh 定制的 115 网盘订阅追更魔改版，基于 mrtian2016 深度改造。内置事件驱动洗版通知、屏蔽时段调度、评分拦截系统、MP 规则组管理。",
     "labels": "订阅,115网盘,洗版,PT洗版,魔改",
-    "version": "1.7.4",
+    "version": "1.7.5",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "jinyuhao-886",
     "level": 1,
     "history": {
+      "v1.7.5": "兼容新版 MP：修复 Subscribe 对象 tmdbid/tmdb_id 属性兼容",
       "v1.7.4": "1. 规则组全面对齐 MP 实际：4 套预设升级为 HQ 拆档 + 60FPS 独立档完整版；2. 修复预设名与 MP 实际规则组不一致导致预设无法匹配；3. 洗版同分不删保护",
       "v1.7.3": "修复：新增 requirements.txt；wheels 目录重建，p115client 升级至 0.0.9.6.5.1；兼容性验证 MP v2.13.3 / v2.14.1 / v2.15.x",
       "v1.7.2": "洗版评分体系升级：新增HQ维度；洗版阈值迁移到 pri_order 统一评分尺度；新增115删除文件（fs_delete 移入回收站）",
