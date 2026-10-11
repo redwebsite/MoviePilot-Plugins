@@ -1,0 +1,164 @@
+name: Sync MediaWarp from Upstream
+
+# 手动触发：检查 AkimioJR/MediaWarp 是否有新版本并同步
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+    && format('Manual Sync MediaWarp (force={0})', inputs.force_update)
+    || 'Scheduled Sync MediaWarp' }}
+
+on:
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: '强制更新（即使版本号未变化也提交）'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    name: Check and Sync AkimioJR/MediaWarp
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest MediaWarp upstream version
+        id: upstream
+        run: |
+          set -euo pipefail
+
+          LATEST=$(curl -sSf \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/AkimioJR/MediaWarp/releases/latest")
+
+          TAG=$(echo "$LATEST" | jq -r '.tag_name')
+          VERSION="${TAG#v}"
+          BODY=$(echo "$LATEST" | jq -r '.body // ""')
+
+          echo "upstream_tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "release_body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "[Info] 上游最新版本: $TAG"
+
+      - name: Read current pinned version from __init__.py
+        id: current
+        run: |
+          set -euo pipefail
+
+          PINNED=$(grep -oP '(?<=self\.__mediawarp_version = ")[^"]+' \
+            plugins.v2/mediawarp/__init__.py)
+
+          echo "pinned_version=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "[Info] 当前固定版本: $PINNED"
+
+      - name: Decide whether to update
+        id: decision
+        run: |
+          set -euo pipefail
+
+          UPSTREAM="${{ steps.upstream.outputs.upstream_version }}"
+          PINNED="${{ steps.current.outputs.pinned_version }}"
+          FORCE="${{ inputs.force_update }}"
+
+          if [ "$UPSTREAM" != "$PINNED" ] || [ "$FORCE" = "true" ]; then
+            echo "should_update=true" >> "$GITHUB_OUTPUT"
+            echo "[Info] 需要更新: $PINNED → $UPSTREAM (force=$FORCE)"
+          else
+            echo "should_update=false" >> "$GITHUB_OUTPUT"
+            echo "[Info] 版本未变化 ($PINNED)，无需更新。"
+          fi
+
+      - name: Update __init__.py pinned version
+        if: steps.decision.outputs.should_update == 'true'
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.upstream_version }}
+        run: |
+          set -euo pipefail
+
+          sed -i "s/self\.__mediawarp_version = \"[^\"]*\"/self.__mediawarp_version = \"${NEW_VER}\"/" \
+            plugins.v2/mediawarp/__init__.py
+
+          echo "[Info] __init__.py 已更新 __mediawarp_version → ${NEW_VER}"
+
+      - name: Update package.v2.json
+        id: pkg
+        if: steps.decision.outputs.should_update == 'true'
+        env:
+          NEW_VER: ${{ steps.upstream.outputs.upstream_version }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          OLD_PLUGIN_VER=$(jq -r '.MediaWarp.version' package.v2.json)
+          MAJOR=$(echo "$OLD_PLUGIN_VER" | cut -d. -f1)
+          MINOR=$(echo "$OLD_PLUGIN_VER" | cut -d. -f2)
+          NEW_MINOR=$((MINOR + 1))
+          NEW_PLUGIN_VER="${MAJOR}.${NEW_MINOR}"
+
+          HISTORY_KEY="v${NEW_PLUGIN_VER}"
+          HISTORY_VALUE="同步上游 AkimioJR/MediaWarp ${UPSTREAM_TAG}"
+
+          jq \
+            --arg new_plugin_ver "$NEW_PLUGIN_VER" \
+            --arg history_key "$HISTORY_KEY" \
+            --arg history_value "$HISTORY_VALUE" \
+            '.MediaWarp.version = $new_plugin_ver |
+             .MediaWarp.history = ({($history_key): $history_value} + .MediaWarp.history)' \
+            package.v2.json > package.v2.json.tmp
+
+          mv package.v2.json.tmp package.v2.json
+
+          echo "new_plugin_version=${NEW_PLUGIN_VER}" >> "$GITHUB_OUTPUT"
+          echo "[Info] package.v2.json 已更新: plugin_version=${NEW_PLUGIN_VER}"
+
+      - name: Commit and push changes
+        if: steps.decision.outputs.should_update == 'true'
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            plugins.v2/mediawarp/__init__.py \
+            package.v2.json
+
+          if git diff --staged --quiet; then
+            echo "[Info] 没有文件变更，跳过提交。"
+          else
+            git commit -m "chore(mediawarp): sync upstream AkimioJR/MediaWarp ${UPSTREAM_TAG}
+
+Co-authored-by: Antigravity <antigravity@google.com>"
+            git push
+            echo "[Info] 变更已提交并推送。"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          UPSTREAM="${{ steps.upstream.outputs.upstream_version }}"
+          PINNED="${{ steps.current.outputs.pinned_version }}"
+          UPDATED="${{ steps.decision.outputs.should_update }}"
+
+          echo "## MediaWarp 同步结果" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 项目 | 值 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 上游版本 (AkimioJR/MediaWarp) | \`v${UPSTREAM}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 当前固定版本 | \`v${PINNED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 是否已更新 | ${UPDATED} |" >> "$GITHUB_STEP_SUMMARY"
