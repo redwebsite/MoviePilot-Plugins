@@ -24,5 +24,67 @@
       "v1.0.1": "兼容更多友商STRM文件地址，修复STRM地址编码错误",
       "v1.0.0": "发布"
     }
+  },
+  "P115StrgmSub": {
+    "name": "115网盘订阅追更魔改版",
+    "release": true,
+    "description": "jyh 定制的 115 网盘订阅追更魔改版，基于 mrtian2016 深度改造。内置事件驱动洗版通知、屏蔽时段调度、评分拦截系统、MP 规则组管理。",
+    "labels": "订阅,115网盘,洗版,PT洗版,魔改",
+    "version": "1.7.4",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
+    "author": "jinyuhao-886",
+    "level": 1,
+    "history": {
+      "v1.7.4": "1. 规则组全面对齐 MP 实际：4 套预设升级为 HQ 拆档 + 60FPS 独立档完整版；2. 修复预设名与 MP 实际规则组不一致导致预设无法匹配；3. 洗版同分不删保护",
+      "v1.7.3": "修复：新增 requirements.txt；wheels 目录重建，p115client 升级至 0.0.9.6.5.1；兼容性验证 MP v2.13.3 / v2.14.1 / v2.15.x",
+      "v1.7.2": "洗版评分体系升级：新增HQ维度；洗版阈值迁移到 pri_order 统一评分尺度；新增115删除文件（fs_delete 移入回收站）",
+      "v1.7.1": "新增 TG 频道/群搜索源；新增 TG 自动转发功能；新增集数守护 & 日历修复（guardian_check）",
+      "v1.7.0": "TG Bot 命令 /pt_sub_search；修复 BOT_COMMAND_INVALID；版本号同步+回退修复",
+      "v1.6.99": "新增手动PT订阅命令；屏蔽态下自动临时恢复订阅站点；修复午夜接管切换崩溃",
+      "v1.6.98": "开放态自动触发PT搜索；通知防重机制；修复仅115拦截被best_version条件阻塞",
+      "v1.6.95": "修复_parse_category_rules丢失result={}导致自动填充失效；修复嵌套目录结构解析错误",
+      "v1.6.94": "_parse_category_rules从数据库直读，不依赖内存缓存",
+      "v1.6.93": "仅115拦截器重做；sites复位机制优化；清理死代码",
+      "v1.6.92": "修复强制重评分使用strm文件大小而非115实际文件大小导致体积评分全为20分的bug",
+      "v1.6.91": "新增「强制重评分」API+UI按钮；UI新增评分工具按钮组",
+      "v1.6.7": "修复 episode_priority 脏数据根因；进度自愈每次同步独立执行；修复PT洗版首次下载误报升级通知",
+      "v1.6.6": "新增UI开关「注册自定义规则+预设规则组到MP」，默认关闭；安装安全：全局配置推迟到首次执行时应用",
+      "v1.6.3": "修复内置规则自动填充；自动填充配置现可在插件页面上直接设置",
+      "v1.6.2": "内置 SubscribeGroup 功能：新增订阅自动填充过滤规则组；自动叠加 DoVi 硬拒绝",
+      "v1.6.1": "事件驱动洗版通知；立即删除旧strm文件；启动时自动兜底清理",
+      "v1.6.0": "PT洗版下载前拦截+综合评分；网盘洗版独立转存方法；低分文件联动删除",
+      "v1.5.3-modi.4": "完整网盘+PT双模式洗版；MP规则组管理、重命名模板注入；屏蔽时段调度"
+    }
+  },
+  "Doc911Subscribe": {
+    "name": "911文档订阅添加",
+    "release": true,
+    "description": "每天21:01扫描金山文档，自动添加「本月更新【国产剧】」「本月更新【国外剧】」「本月更新【综艺】」在播新剧到MP订阅。可配置文档链接，TMDB识别失败时发送通知提醒。",
+    "labels": "订阅,文档,KDocs,金山文档,自动订阅,通知",
+    "version": "1.0.01",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/chain.png",
+    "author": "jinyuhao-886",
+    "level": 1,
+    "history": {
+      "v1.0.01": "新增文档链接配置项：用doc_url替换file_id，用户可直接填入金山文档分享链接",
+      "v1.0.0": "识别失败发送通知提醒；移除AI辅助订阅调用；版本号体系重置",
+      "v1.2.1": "扩展季数识别：支持第1季(阿拉伯数字)、S01、Season 1格式",
+      "v1.2.0": "修复季节订阅错误：从剧名提取「第X季」传参",
+      "v1.1.1": "修复SubscribeOper.list() → Subscribe.get_by_title()；文档保存到插件目录",
+      "v1.1.0": "初始版本：每天21:01自动扫描KDocs文档，解析三个区段在播剧集"
+    }
+  },
+  "LibraryScraperEnhanced": {
+    "name": "媒体库刮削增强版",
+    "release": true,
+    "description": "定时对媒体库进行刮削，补齐缺失元数据和图片。支持多线程并行刮削，大幅提升速度。",
+    "labels": "刮削,媒体库,多线程,元数据",
+    "version": "2.1.3-enhanced",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/scraper.png",
+    "author": "jxxghp + jyh",
+    "level": 1,
+    "history": {
+      "v2.1.3-enhanced": "jyh 魔改：支持多线程并行刮削，基于官方版本深度改造"
+    }
   }
 }
